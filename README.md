@@ -32,6 +32,13 @@ HRMOS_API_KEY_HEADER=X-API-KEY
 HRMOS_COMPANY_ID=123456
 HRMOS_DEFAULT_FROM=2025-09-01
 HRMOS_DEFAULT_TO=2025-09-30
+# Token auth (Basic -> Token)
+HRMOS_AUTH_SCHEME=TOKEN
+HRMOS_API_KEY_ID=your_api_key_id
+HRMOS_API_SECRET=your_secret_key
+HRMOS_TOKEN_ENDPOINT=/tokens
+HRMOS_TOKEN_HEADER=X-Token
+HRMOS_TOKEN_TTL_SEC=3000
 ```
 
 4. 開発用サーバーを起動する:
@@ -71,6 +78,23 @@ npm start
 ```
 
 6. ブラウザで `http://localhost:3000` にアクセスして動作を確認する。
+
+## 認証（HRMOS勤怠API）
+
+HRMOS勤怠APIは以下のフローで認証されます（概要）:
+1. API KEYの作成（管理画面）
+2. Secret Key を使ったBasic認証でTokenを発行
+3. 発行したTokenをHTTPヘッダ（例: X-Token）に付与して各APIを呼び出し
+4. Tokenの有効期限が切れる前に更新（本実装では401を検知したら自動再発行してリトライ）
+5. Tokenの削除（管理画面側）
+
+本リポジトリでは、環境変数で TOKEN モードを指定すると、以下の手順で自動的にTokenを発行・キャッシュし、必要に応じて再発行します。
+- HRMOS_AUTH_SCHEME=TOKEN
+- HRMOS_API_KEY_ID, HRMOS_API_SECRET を Basic 認証で組み合わせ（Base64）、HRMOS_TOKEN_ENDPOINT に POST して Token を取得
+- 取得した Token を HRMOS_TOKEN_HEADER で指定したヘッダ名で各API呼び出しに付与
+- APIレスポンスが401の場合、キャッシュを破棄して再発行→一度だけリトライ
+
+必要に応じて .env のパラメータを実際のテナント仕様に合わせて修正してください。
 
 ## その他
 

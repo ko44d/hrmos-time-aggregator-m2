@@ -1,7 +1,6 @@
 // lib/hrmosApi.ts
-// Server-side HRMOS/IEYASU Attendance API client
-// NOTE: Adjust endpoints and header names to the official docs:
-// https://ieyasu.co/docs/api.html#section/APIURL
+// Server-side HRMOS/IEYASU Attendance API client with token-based auth lifecycle
+// Docs: https://ieyasu.co/docs/api.html#section/APIURL (confirm exact endpoints in your tenant)
 
 export type HrmosAttendanceSummary = {
   employee_id: number;
@@ -32,18 +31,70 @@ const BASE_URL = required("HRMOS_API_BASE_URL", process.env.HRMOS_API_BASE_URL);
 // Authentication header per docs. Many IEYASU integrations use X-Api-Key or Authorization.
 // Set the appropriate one in code below based on your environment variable HRMOS_AUTH_SCHEME.
 // Supported values: 'X-API-KEY', 'Bearer'
-const API_KEY = required("HRMOS_API_KEY", process.env.HRMOS_API_KEY);
-const AUTH_SCHEME = (process.env.HRMOS_AUTH_SCHEME || 'X-API-KEY').toUpperCase();
+const API_KEY = process.env.HRMOS_API_KEY; // used only for direct key schemes
+const AUTH_SCHEME = (process.env.HRMOS_AUTH_SCHEME || 'TOKEN').toUpperCase(); // TOKEN|X-API-KEY|BEARER
 
 // Some tenants require a company or tenant identifier either in query or header.
 const COMPANY_ID = process.env.HRMOS_COMPANY_ID;
 
+// --- Token auth lifecycle (Basic -> Token issue -> use -> refresh) ---
+const TOKEN_CACHE_TTL_SEC = Number(process.env.HRMOS_TOKEN_TTL_SEC || 50 * 60); // default 50min
+let cachedToken: { value: string; expiresAt: number } | null = null;
+
+const BASIC_KEY_ID = process.env.HRMOS_API_KEY_ID; // public key/id
+const BASIC_SECRET = process.env.HRMOS_API_SECRET; // secret key used for Basic
+const TOKEN_ENDPOINT = process.env.HRMOS_TOKEN_ENDPOINT || '/tokens'; // adjust to actual
+const TOKEN_HEADER_NAME = process.env.HRMOS_TOKEN_HEADER || 'X-Token'; // header to send token
+
+function b64(s: string) {
+  return Buffer.from(s, 'utf8').toString('base64');
+}
+
+async function issueToken(): Promise<{ token: string; expiresIn?: number }> {
+  const url = new URL(TOKEN_ENDPOINT, BASE_URL);
+  const auth = `Basic ${b64(`${BASIC_KEY_ID}:${BASIC_SECRET}`)}`;
+  const res = await fetch(url.toString(), {
+    method: 'POST',
+    headers: {
+      Authorization: auth,
+      Accept: 'application/json',
+    },
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Token issue failed ${res.status}: ${body}`);
+  }
+  const json = await res.json();
+  // adapt field names per docs
+  const token = json.token || json.access_token || json.Token;
+  const expiresIn = json.expires_in || json.expiresIn;
+  if (!token) throw new Error('Token not present in response');
+  return { token, expiresIn };
+}
+
+async function getToken(): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  if (cachedToken && cachedToken.expiresAt > now + 60) {
+    return cachedToken.value;
+  }
+  const { token, expiresIn } = await issueToken();
+  const ttl = expiresIn ? Math.min(expiresIn, TOKEN_CACHE_TTL_SEC) : TOKEN_CACHE_TTL_SEC;
+  cachedToken = { value: token, expiresAt: now + ttl };
+  return token;
+}
+
 function buildAuthHeaders(): Record<string, string> {
+  if (AUTH_SCHEME === 'TOKEN') {
+    // placeholder, token obtained dynamically in hrmosFetch
+    return {};
+  }
   if (AUTH_SCHEME === 'BEARER') {
+    if (!API_KEY) throw new Error('HRMOS_API_KEY is not set');
     return { Authorization: `Bearer ${API_KEY}` };
   }
-  // Default to X-API-KEY (exact case sometimes matters; docs often show 'X-Api-Key')
   const headerName = process.env.HRMOS_API_KEY_HEADER || 'X-API-KEY';
+  if (!API_KEY) throw new Error('HRMOS_API_KEY is not set');
   return { [headerName]: API_KEY } as Record<string, string>;
 }
 
@@ -55,14 +106,28 @@ async function hrmosFetch(path: string, params?: Record<string, any>) {
     });
   }
 
-  const res = await fetch(url.toString(), {
+  const dynamicHeaders: Record<string, string> = { ...buildAuthHeaders(), Accept: 'application/json' };
+  if (AUTH_SCHEME === 'TOKEN') {
+    const token = await getToken();
+    dynamicHeaders[TOKEN_HEADER_NAME] = token;
+  }
+  let res = await fetch(url.toString(), {
     method: 'GET',
-    headers: {
-      ...buildAuthHeaders(),
-      Accept: 'application/json',
-    },
+    headers: dynamicHeaders,
     cache: 'no-store',
   });
+
+  if (AUTH_SCHEME === 'TOKEN' && res.status === 401) {
+    // Token might be expired -> refresh and retry once
+    cachedToken = null;
+    const newToken = await getToken();
+    dynamicHeaders[TOKEN_HEADER_NAME] = newToken;
+    res = await fetch(url.toString(), {
+      method: 'GET',
+      headers: dynamicHeaders,
+      cache: 'no-store',
+    });
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => '');

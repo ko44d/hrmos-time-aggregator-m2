@@ -15,17 +15,27 @@
    ```
 
 2. 必要な依存関係をインストールする:
-   ```sh
-   npm install
-   ```
+  ```sh
+  npm install
+  ```
 
 3. 環境変数を設定する:
-   `.env.example` をコピーして `.env` を作成し、適宜設定を記入してください。
+  `.env.example` をコピーして `.env.local` を作成し、HRMOSのAPI接続情報を設定してください。
+  例:
+  
+  HRMOS_API_BASE_URL=https://ieyasu.co/api/v1
+  HRMOS_API_KEY=your_api_key_here
+  HRMOS_AUTH_SCHEME=X-API-KEY
+  HRMOS_API_KEY_HEADER=X-API-KEY
+  # 必要に応じて
+  HRMOS_COMPANY_ID=123456
+  HRMOS_DEFAULT_FROM=2025-09-01
+  HRMOS_DEFAULT_TO=2025-09-30
 
 4. 開発用サーバーを起動する:
-   ```sh
-   npm run dev
-   ```
+  ```sh
+  npm run dev
+  ```
    実行すると、ホットリロードが有効な状態で開発サーバーが起動します。
 
 5. ブラウザで `http://localhost:3000` にアクセスして動作を確認する。
@@ -46,12 +56,12 @@
    ```
 
 3. 環境変数を設定する:
-   `.env.example` をコピーして `.env` を作成し、適宜設定を記入してください。
+  `.env.example` をコピーして `.env` もしくは `.env.production` を作成し、HRMOSのAPI接続情報を設定してください（本番環境の値に置き換えてください）。
 
 4. プロダクションビルドを作成する:
-   ```sh
-   npm run build
-   ```
+  ```sh
+  npm run build
+  ```
 
 5. プロダクションサーバーを起動する:
    ```sh

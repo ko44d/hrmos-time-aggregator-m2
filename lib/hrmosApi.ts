@@ -18,15 +18,12 @@ export type FetchSummariesParams = {
   // Add more filter fields if the API supports them (e.g., department_id, employee_ids, etc.)
 };
 
-function required(name: string, v: string | undefined): string {
-  if (!v) throw new Error(`${name} is not set`);
-  return v;
-}
 
 // According to docs, build the correct base URL. The API URL section indicates patterns like
 // https://api.ieyasu.co or https://ieyasu.co/api/v1 depending on your plan.
 // We keep it configurable.
-const BASE_URL = required("HRMOS_API_BASE_URL", process.env.HRMOS_API_BASE_URL);
+// NOTE: Do not throw at import time; allow runtime-provided config.
+const BASE_URL = process.env.HRMOS_API_BASE_URL || "";
 
 // Authentication header per docs. Many IEYASU integrations use X-Api-Key or Authorization.
 // Set the appropriate one in code below based on your environment variable HRMOS_AUTH_SCHEME.
@@ -98,7 +95,7 @@ function buildAuthHeaders(): Record<string, string> {
   return { [headerName]: API_KEY } as Record<string, string>;
 }
 
-async function hrmosFetch(path: string, params?: Record<string, any>) {
+async function hrmosFetch(path: string, params?: Record<string, unknown>) {
   const url = new URL(path, BASE_URL);
   if (params) {
     Object.entries(params).forEach(([k, v]) => {
@@ -156,14 +153,15 @@ export async function fetchAttendanceSummariesAll(params: FetchSummariesParams) 
 
     // Some APIs return { data: [...], total: n, page: 1, per_page: 100 }
     // others return plain arrays. Normalize here.
-    const items: HrmosAttendanceSummary[] = Array.isArray((data as any)?.data)
-      ? (data as any).data
-      : (Array.isArray(data) ? data as HrmosAttendanceSummary[] : []);
+    const dataObj = data as unknown as { data?: unknown; total?: number };
+    const items: HrmosAttendanceSummary[] = Array.isArray(dataObj?.data)
+      ? (dataObj.data as HrmosAttendanceSummary[])
+      : (Array.isArray(data as unknown as unknown[]) ? (data as unknown as HrmosAttendanceSummary[]) : []);
 
     all = all.concat(items);
 
     // Next-page detection. If 'total' and 'per_page' exist, use them; otherwise, stop when items < perPage.
-    const total = (data as any)?.total as number | undefined;
+    const total = dataObj?.total as number | undefined;
     const hasNext = items.length === perPage && (total ? all.length < total : items.length > 0);
     if (!hasNext) break;
     page += 1;
@@ -188,4 +186,64 @@ export function toTimesheet(summary: HrmosAttendanceSummary): Timesheet {
     totalHours: Math.round((totalM / 60) * 10) / 10,
     overtime: Math.round((otM / 60) * 10) / 10,
   };
+}
+
+// ---- Runtime-config client (no environment variables required) ----
+export type HrmosRuntimeConfig = {
+  baseUrl: string; // e.g., https://ieyasu.co/api/v1
+  apiKey: string;  // direct API key value
+  apiKeyHeader?: string; // default 'X-API-KEY'
+  companyId?: string; // optional
+};
+
+async function hrmosFetchWithConfig(cfg: HrmosRuntimeConfig, path: string, params?: Record<string, unknown>) {
+  if (!cfg.baseUrl) throw new Error('baseUrl is required');
+  if (!cfg.apiKey) throw new Error('apiKey is required');
+  const url = new URL(path, cfg.baseUrl);
+  if (params) {
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
+    });
+  }
+  const headerName = cfg.apiKeyHeader || 'X-API-KEY';
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    [headerName]: cfg.apiKey,
+  };
+  const res = await fetch(url.toString(), { method: 'GET', headers, cache: 'no-store' });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Hrmos API error ${res.status} ${res.statusText}: ${body}`);
+  }
+  return res.json();
+}
+
+export async function fetchAttendanceSummariesAllWithConfig(cfg: HrmosRuntimeConfig, params: FetchSummariesParams) {
+  const perPage = params.per_page ?? 100;
+  let page = params.page ?? 1;
+  let all: HrmosAttendanceSummary[] = [];
+
+  while (true) {
+    const data = await hrmosFetchWithConfig(cfg, '/attendance_summaries', {
+      from: params.from,
+      to: params.to,
+      page,
+      per_page: perPage,
+      company_id: cfg.companyId,
+    });
+
+    const dataObj2 = data as unknown as { data?: unknown; total?: number };
+    const items: HrmosAttendanceSummary[] = Array.isArray(dataObj2?.data)
+      ? (dataObj2.data as HrmosAttendanceSummary[])
+      : (Array.isArray(data as unknown as unknown[]) ? (data as unknown as HrmosAttendanceSummary[]) : []);
+
+    all = all.concat(items);
+
+    const total = dataObj2?.total as number | undefined;
+    const hasNext = items.length === perPage && (total ? all.length < total : items.length > 0);
+    if (!hasNext) break;
+    page += 1;
+  }
+
+  return all;
 }
